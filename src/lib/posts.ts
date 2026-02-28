@@ -1445,6 +1445,1991 @@ def combined_loss(pred, target, alpha=0.5):
 希望本文能帮助你深入理解PyTorch损失函数，在实际项目中做出正确的选择！
 `,
   },
+  {
+    id: 'llm-pretraining-guide',
+    title: '大模型预训练完全指南：从架构原理到工程实践',
+    summary: '深入解析大语言模型预训练的完整流程，涵盖Transformer架构原理、分布式训练策略、数据处理流水线，以及从零开始预训练LLaMA的完整代码实现。',
+    date: '2024-02-20',
+    readingTime: '45分钟',
+    tags: ['大模型', 'LLM', '预训练', 'Transformer', '分布式训练'],
+    content: `
+## 引言
+
+大语言模型（Large Language Model, LLM）的预训练是当代人工智能领域最具变革性的技术之一。从GPT系列的惊艳表现到LLaMA的高效架构，预训练技术正在重新定义机器学习的边界。本文将全面深入地探讨大模型预训练的方方面面，从理论基础到工程实践，帮助你建立完整的知识体系。
+
+### 预训练的意义
+
+预训练的核心思想是让模型在海量无标注文本上学习通用的语言表示，然后通过微调适应下游任务。这种方法具有以下优势：
+
+1. **数据效率**：无需大量标注数据即可获得优秀性能
+2. **知识迁移**：预训练获得的知识可以有效迁移到各种任务
+3. **泛化能力**：模型学习到通用的语言理解能力
+4. **规模效应**：随着模型规模增大，性能持续提升
+
+### 发展历程
+
+大模型预训练的发展经历了几个重要阶段：
+
+- **2017年**：Transformer架构提出，奠定了现代大模型的基础
+- **2018年**：BERT和GPT-1发布，开启了预训练语言模型时代
+- **2019年**：GPT-2展示了大规模语言模型的生成能力
+- **2020年**：GPT-3证明了规模法则，1750亿参数惊艳世界
+- **2022年**：ChatGPT发布，大模型走进大众视野
+- **2023年**：LLaMA系列开源，降低了大模型的研究门槛
+- **2024年**：多模态大模型蓬勃发展，AI Agent成为热点
+
+---
+
+## Transformer架构深度解析
+
+Transformer是大语言模型的基石架构。与传统的RNN/LSTM相比，Transformer完全基于注意力机制，具有并行计算优势和更强的长距离依赖建模能力。
+
+![Transformer架构](/images/transformer-architecture.png)
+
+### 整体架构
+
+Transformer采用编码器-解码器（Encoder-Decoder）结构，包含以下核心组件：
+
+\`\`\`python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class TransformerConfig:
+    """Transformer模型配置"""
+    def __init__(
+        self,
+        vocab_size=32000,
+        d_model=4096,
+        n_heads=32,
+        n_layers=32,
+        d_ff=11008,
+        max_seq_len=2048,
+        dropout=0.1,
+    ):
+        self.vocab_size = vocab_size
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.d_ff = d_ff
+        self.max_seq_len = max_seq_len
+        self.dropout = dropout
+
+
+class Transformer(nn.Module):
+    """完整的Transformer模型"""
+    
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        
+        # 词嵌入和位置编码
+        self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
+        self.position_embedding = nn.Embedding(config.max_seq_len, config.d_model)
+        
+        # Dropout层
+        self.embed_dropout = nn.Dropout(config.dropout)
+        
+        # Transformer层堆叠
+        self.layers = nn.ModuleList([
+            TransformerBlock(config) for _ in range(config.n_layers)
+        ])
+        
+        # 最终层归一化
+        self.final_norm = nn.LayerNorm(config.d_model)
+        
+        # 输出层（语言模型头）
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        
+        # 权重共享
+        self.lm_head.weight = self.token_embedding.weight
+        
+        # 初始化权重
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            torch.nn.init.ones_(module.weight)
+            torch.nn.init.zeros_(module.bias)
+    
+    def forward(self, input_ids, attention_mask=None):
+        batch_size, seq_len = input_ids.shape
+        
+        # 生成位置索引
+        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
+        
+        # 嵌入层
+        x = self.token_embedding(input_ids) + self.position_embedding(positions)
+        x = self.embed_dropout(x)
+        
+        # 因果注意力掩码
+        if attention_mask is None:
+            causal_mask = torch.triu(
+                torch.ones(seq_len, seq_len, device=input_ids.device), 
+                diagonal=1
+            ).bool()
+        else:
+            causal_mask = ~attention_mask.unsqueeze(1).unsqueeze(2)
+        
+        # Transformer层
+        for layer in self.layers:
+            x = layer(x, causal_mask)
+        
+        # 最终归一化
+        x = self.final_norm(x)
+        
+        # 语言模型头
+        logits = self.lm_head(x)
+        
+        return logits
+\`\`\`
+
+### 嵌入层详解
+
+嵌入层将离散的词元（token）映射为连续的向量表示：
+
+$$
+\\text{Embedding}(x) = E_x + P_x
+$$
+
+其中 $E_x$ 是词嵌入，$P_x$ 是位置嵌入。
+
+\`\`\`python
+class EmbeddingLayer(nn.Module):
+    """嵌入层：词嵌入 + 位置嵌入"""
+    
+    def __init__(self, vocab_size, d_model, max_seq_len, dropout=0.1):
+        super().__init__()
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.position_embedding = nn.Embedding(max_seq_len, d_model)
+        self.dropout = nn.Dropout(dropout)
+        
+        # 可选：使用旋转位置编码（RoPE）
+        self.use_rope = False
+    
+    def forward(self, input_ids):
+        batch_size, seq_len = input_ids.shape
+        positions = torch.arange(seq_len, device=input_ids.device)
+        
+        # 词嵌入
+        token_embeds = self.token_embedding(input_ids)
+        
+        # 位置嵌入
+        position_embeds = self.position_embedding(positions)
+        
+        # 组合
+        embeddings = token_embeds + position_embeds
+        embeddings = self.dropout(embeddings)
+        
+        return embeddings
+\`\`\`
+
+### 前馈神经网络（FFN）
+
+每个Transformer层包含一个前馈神经网络，用于非线性变换：
+
+$$
+\\text{FFN}(x) = \\text{GELU}(xW_1 + b_1)W_2 + b_2
+$$
+
+\`\`\`python
+class FeedForward(nn.Module):
+    """前馈神经网络"""
+    
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super().__init__()
+        self.up_proj = nn.Linear(d_model, d_ff, bias=False)
+        self.down_proj = nn.Linear(d_ff, d_model, bias=False)
+        self.dropout = nn.Dropout(dropout)
+        
+        # 使用SwiGLU激活函数（LLaMA风格）
+        self.gate_proj = nn.Linear(d_model, d_ff, bias=False)
+    
+    def forward(self, x):
+        # SwiGLU: gate * up_proj
+        gate = F.silu(self.gate_proj(x))
+        up = self.up_proj(x)
+        out = self.down_proj(gate * up)
+        return self.dropout(out)
+\`\`\`
+
+### 层归一化
+
+层归一化对于训练稳定性至关重要：
+
+$$
+\\text{LayerNorm}(x) = \\gamma \\cdot \\frac{x - \\mu}{\\sqrt{\\sigma^2 + \\epsilon}} + \\beta
+$$
+
+\`\`\`python
+class RMSNorm(nn.Module):
+    """RMS LayerNorm（LLaMA使用）"""
+    
+    def __init__(self, d_model, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(d_model))
+        self.eps = eps
+    
+    def forward(self, x):
+        # RMS归一化
+        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
+        return self.weight * (x / rms)
+\`\`\`
+
+---
+
+## 自注意力机制详解
+
+自注意力机制是Transformer的核心创新，它允许模型在处理每个位置时关注输入序列的所有位置。
+
+![自注意力机制](/images/self-attention.png)
+
+### 数学原理
+
+自注意力计算查询（Query）、键（Key）、值（Value）三个矩阵：
+
+$$
+\\text{Attention}(Q, K, V) = \\text{softmax}\\left(\\frac{QK^T}{\\sqrt{d_k}}\\right)V
+$$
+
+其中：
+- $Q = XW_Q$：查询矩阵
+- $K = XW_K$：键矩阵  
+- $V = XW_V$：值矩阵
+- $d_k$：键向量的维度
+
+### 缩放点积注意力
+
+\`\`\`python
+class ScaledDotProductAttention(nn.Module):
+    """缩放点积注意力"""
+    
+    def __init__(self, d_k, dropout=0.1):
+        super().__init__()
+        self.scale = math.sqrt(d_k)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, q, k, v, mask=None):
+        # 计算注意力分数
+        # q: [batch, heads, seq_len, d_k]
+        # k: [batch, heads, seq_len, d_k]
+        # 注意力分数: [batch, heads, seq_len, seq_len]
+        scores = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+        
+        # 应用掩码
+        if mask is not None:
+            scores = scores.masked_fill(mask == True, float('-inf'))
+        
+        # Softmax归一化
+        attention_weights = F.softmax(scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+        
+        # 计算输出
+        output = torch.matmul(attention_weights, v)
+        
+        return output, attention_weights
+\`\`\`
+
+### 多头注意力
+
+多头注意力允许模型同时关注不同位置的不同表示子空间：
+
+$$
+\\text{MultiHead}(Q, K, V) = \\text{Concat}(\\text{head}_1, ..., \\text{head}_h)W^O
+$$
+
+其中每个head为：
+
+$$
+\\text{head}_i = \\text{Attention}(QW_i^Q, KW_i^K, VW_i^V)
+$$
+
+\`\`\`python
+class MultiHeadAttention(nn.Module):
+    """多头自注意力机制"""
+    
+    def __init__(self, d_model, n_heads, dropout=0.1):
+        super().__init__()
+        assert d_model % n_heads == 0, "d_model必须能被n_heads整除"
+        
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+        
+        # Q, K, V投影层
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        
+        # 输出投影
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+        
+        # 注意力计算
+        self.attention = ScaledDotProductAttention(self.d_k, dropout)
+        
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x, mask=None):
+        batch_size, seq_len, _ = x.shape
+        
+        # 线性投影
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        
+        # 重塑为多头形式
+        # [batch, seq_len, d_model] -> [batch, n_heads, seq_len, d_k]
+        q = q.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        
+        # 计算注意力
+        attn_output, attn_weights = self.attention(q, k, v, mask)
+        
+        # 合并多头
+        # [batch, n_heads, seq_len, d_k] -> [batch, seq_len, d_model]
+        attn_output = attn_output.transpose(1, 2).contiguous().view(
+            batch_size, seq_len, self.d_model
+        )
+        
+        # 输出投影
+        output = self.out_proj(attn_output)
+        output = self.dropout(output)
+        
+        return output, attn_weights
+\`\`\`
+
+### 因果注意力掩码
+
+在语言模型中，为了防止模型看到未来的词元，需要使用因果注意力掩码：
+
+\`\`\`python
+def create_causal_mask(seq_len, device):
+    """创建因果注意力掩码"""
+    # 上三角矩阵（不包括对角线）设为True
+    mask = torch.triu(torch.ones(seq_len, seq_len, device=device), diagonal=1).bool()
+    return mask
+
+# 示例：4长度序列的因果掩码
+# [[False, True,  True,  True ],
+#  [False, False, True,  True ],
+#  [False, False, False, True ],
+#  [False, False, False, False]]
+\`\`\`
+
+### 旋转位置编码（RoPE）
+
+RoPE是一种相对位置编码方法，被LLaMA等模型采用：
+
+$$
+f(x, m) = 
+\\begin{pmatrix}
+x_1 \\\\
+x_2 \\\\
+x_3 \\\\
+x_4 \\\\
+\\vdots
+\\end{pmatrix}
+\\otimes
+\\begin{pmatrix}
+\\cos(m\\theta_1) \\\\
+\\cos(m\\theta_1) \\\\
+\\cos(m\\theta_2) \\\\
+\\cos(m\\theta_2) \\\\
+\\vdots
+\\end{pmatrix}
++
+\\begin{pmatrix}
+-x_2 \\\\
+x_1 \\\\
+-x_4 \\\\
+x_3 \\\\
+\\vdots
+\\end{pmatrix}
+\\otimes
+\\begin{pmatrix}
+\\sin(m\\theta_1) \\\\
+\\sin(m\\theta_1) \\\\
+\\sin(m\\theta_2) \\\\
+\\sin(m\\theta_2) \\\\
+\\vdots
+\\end{pmatrix}
+$$
+
+\`\`\`python
+class RotaryPositionEmbedding(nn.Module):
+    """旋转位置编码（RoPE）"""
+    
+    def __init__(self, d_model, max_seq_len=2048, base=10000):
+        super().__init__()
+        self.d_model = d_model
+        self.max_seq_len = max_seq_len
+        self.base = base
+        
+        # 预计算频率
+        inv_freq = 1.0 / (base ** (torch.arange(0, d_model, 2).float() / d_model))
+        self.register_buffer('inv_freq', inv_freq)
+        
+        # 预计算cos和sin值
+        self._build_cache(max_seq_len)
+    
+    def _build_cache(self, seq_len):
+        t = torch.arange(seq_len, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
+        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+        # [seq_len, d_model/2]
+        
+        # 复制以匹配完整维度
+        emb = torch.cat((freqs, freqs), dim=-1)
+        # [seq_len, d_model]
+        
+        self.register_buffer('cos_cached', emb.cos().unsqueeze(0).unsqueeze(0))
+        self.register_buffer('sin_cached', emb.sin().unsqueeze(0).unsqueeze(0))
+    
+    def forward(self, x, seq_len):
+        # x: [batch, n_heads, seq_len, d_k]
+        cos = self.cos_cached[:, :, :seq_len, :]
+        sin = self.sin_cached[:, :, :seq_len, :]
+        
+        # 应用旋转
+        return self._apply_rotary_emb(x, cos, sin)
+    
+    def _apply_rotary_emb(self, x, cos, sin):
+        # 将x分成两部分
+        x1, x2 = x[..., :x.shape[-1]//2], x[..., x.shape[-1]//2:]
+        
+        # 旋转
+        rotated_x = torch.cat((-x2, x1), dim=-1)
+        
+        # 应用旋转位置编码
+        return x * cos + rotated_x * sin
+\`\`\`
+
+### Flash Attention优化
+
+Flash Attention是一种高效的注意力计算方法，显著减少内存访问：
+
+\`\`\`python
+# Flash Attention的核心思想：分块计算，避免存储完整的注意力矩阵
+class FlashAttention(nn.Module):
+    """Flash Attention简化实现"""
+    
+    def __init__(self, d_k, dropout=0.1, block_size=256):
+        super().__init__()
+        self.scale = math.sqrt(d_k)
+        self.dropout = nn.Dropout(dropout)
+        self.block_size = block_size
+    
+    def forward(self, q, k, v, mask=None):
+        batch_size, n_heads, seq_len, d_k = q.shape
+        
+        # 输出张量
+        output = torch.zeros_like(q)
+        
+        # 分块计算
+        for i in range(0, seq_len, self.block_size):
+            q_block = q[:, :, i:i+self.block_size, :]
+            
+            # 分块计算注意力
+            block_output = self._compute_block_attention(q_block, k, v, mask, i)
+            output[:, :, i:i+self.block_size, :] = block_output
+        
+        return output
+    
+    def _compute_block_attention(self, q_block, k, v, mask, start_idx):
+        # 计算当前块的注意力分数
+        scores = torch.matmul(q_block, k.transpose(-2, -1)) / self.scale
+        
+        # 应用因果掩码
+        if mask is not None:
+            end_idx = start_idx + q_block.shape[2]
+            block_mask = mask[:, :, start_idx:end_idx, :]
+            scores = scores.masked_fill(block_mask, float('-inf'))
+        
+        # Softmax
+        attention_weights = F.softmax(scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+        
+        # 计算输出
+        return torch.matmul(attention_weights, v)
+\`\`\`
+
+---
+
+## 主流大模型架构对比
+
+不同的模型架构在设计和性能上各有特点。下面我们对主流大模型进行详细对比。
+
+### GPT系列架构
+
+GPT（Generative Pre-trained Transformer）采用仅解码器（Decoder-only）架构：
+
+\`\`\`python
+class GPTBlock(nn.Module):
+    """GPT风格的Transformer块"""
+    
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+        super().__init__()
+        # Pre-LN结构（先归一化，后计算）
+        self.ln1 = nn.LayerNorm(d_model)
+        self.attention = MultiHeadAttention(d_model, n_heads, dropout)
+        
+        self.ln2 = nn.LayerNorm(d_model)
+        self.ffn = FeedForward(d_model, d_ff, dropout)
+    
+    def forward(self, x, mask=None):
+        # 注意力残差连接
+        x = x + self.attention(self.ln1(x), mask)[0]
+        # FFN残差连接
+        x = x + self.ffn(self.ln2(x))
+        return x
+\`\`\`
+
+### BERT架构
+
+BERT（Bidirectional Encoder Representations from Transformers）采用仅编码器架构：
+
+\`\`\`python
+class BERTBlock(nn.Module):
+    """BERT风格的Transformer块"""
+    
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+        super().__init__()
+        # Post-LN结构（先计算，后归一化）
+        self.attention = MultiHeadAttention(d_model, n_heads, dropout)
+        self.ln1 = nn.LayerNorm(d_model)
+        
+        self.ffn = FeedForward(d_model, d_ff, dropout)
+        self.ln2 = nn.LayerNorm(d_model)
+    
+    def forward(self, x, mask=None):
+        # 注意力残差连接
+        x = self.ln1(x + self.attention(x, mask)[0])
+        # FFN残差连接
+        x = self.ln2(x + self.ffn(x))
+        return x
+\`\`\`
+
+### LLaMA架构特点
+
+LLaMA对标准Transformer进行了多项优化：
+
+\`\`\`python
+class LLaMABlock(nn.Module):
+    """LLaMA风格的Transformer块"""
+    
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+        super().__init__()
+        # RMSNorm替代LayerNorm
+        self.ln1 = RMSNorm(d_model)
+        self.attention = MultiHeadAttention(d_model, n_heads, dropout)
+        
+        self.ln2 = RMSNorm(d_model)
+        # SwiGLU激活的FFN
+        self.ffn = FeedForward(d_model, d_ff, dropout)
+    
+    def forward(self, x, mask=None):
+        # Pre-Norm结构
+        x = x + self.attention(self.ln1(x), mask)[0]
+        x = x + self.ffn(self.ln2(x))
+        return x
+
+
+class LLaMAModel(nn.Module):
+    """LLaMA模型"""
+    
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        
+        # 嵌入层（不使用位置嵌入，依赖RoPE）
+        self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
+        
+        # Transformer层
+        self.layers = nn.ModuleList([
+            LLaMABlock(
+                config.d_model,
+                config.n_heads,
+                config.d_ff,
+                config.dropout
+            ) for _ in range(config.n_layers)
+        ])
+        
+        # 最终归一化
+        self.final_norm = RMSNorm(config.d_model)
+        
+        # 语言模型头
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        
+        # 权重共享
+        self.lm_head.weight = self.token_embedding.weight
+        
+        # RoPE
+        self.rope = RotaryPositionEmbedding(
+            config.d_model // config.n_heads,
+            config.max_seq_len
+        )
+    
+    def forward(self, input_ids):
+        x = self.token_embedding(input_ids)
+        
+        # 因果掩码
+        causal_mask = create_causal_mask(
+            input_ids.shape[1], 
+            input_ids.device
+        )
+        
+        for layer in self.layers:
+            x = layer(x, causal_mask)
+        
+        x = self.final_norm(x)
+        logits = self.lm_head(x)
+        
+        return logits
+\`\`\`
+
+### 架构对比表
+
+| 特性 | GPT系列 | BERT | LLaMA |
+|-----|--------|------|-------|
+| 架构类型 | Decoder-only | Encoder-only | Decoder-only |
+| 注意力方向 | 单向（因果） | 双向 | 单向（因果） |
+| 归一化位置 | Pre-LN | Post-LN | Pre-LN |
+| 归一化类型 | LayerNorm | LayerNorm | RMSNorm |
+| 位置编码 | 可学习/RoPE | 可学习 | RoPE |
+| 激活函数 | GELU | GELU | SwiGLU |
+| 偏置项 | 有 | 有 | 无 |
+| 预训练任务 | 自回归 | MLM+NSP | 自回归 |
+
+---
+
+## 预训练任务设计
+
+预训练任务的设计直接影响模型学习到的表示质量。
+
+### 自回归语言建模（CLM）
+
+自回归语言建模是GPT和LLaMA使用的预训练任务：
+
+$$
+\\mathcal{L}_{CLM} = -\\sum_{t=1}^{T} \\log P(x_t | x_{<t})
+$$
+
+\`\`\`python
+class CausalLMObjective(nn.Module):
+    """自回归语言建模目标"""
+    
+    def __init__(self, vocab_size, ignore_index=-100):
+        super().__init__()
+        self.loss_fn = nn.CrossEntropyLoss(ignore_index=ignore_index)
+    
+    def forward(self, logits, labels):
+        # logits: [batch, seq_len, vocab_size]
+        # labels: [batch, seq_len]
+        
+        # 移位：预测下一个词
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        
+        # 计算损失
+        loss = self.loss_fn(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1)
+        )
+        
+        return loss
+\`\`\`
+
+### 掩码语言建模（MLM）
+
+MLM是BERT使用的预训练任务，随机掩盖部分词元：
+
+$$
+\\mathcal{L}_{MLM} = -\\sum_{i \\in M} \\log P(x_i | x_{\\setminus M})
+$$
+
+\`\`\`python
+class MLMMasker:
+    """MLM掩码生成器"""
+    
+    def __init__(
+        self, 
+        vocab_size, 
+        mask_token_id, 
+        mask_prob=0.15,
+        random_replace_prob=0.1,
+        keep_prob=0.1
+    ):
+        self.vocab_size = vocab_size
+        self.mask_token_id = mask_token_id
+        self.mask_prob = mask_prob
+        self.random_replace_prob = random_replace_prob
+        self.keep_prob = keep_prob
+    
+    def __call__(self, input_ids):
+        # 复制原始输入
+        labels = input_ids.clone()
+        
+        # 随机选择掩码位置
+        probability_matrix = torch.full(
+            input_ids.shape, self.mask_prob
+        )
+        
+        # 掩码
+        masked_indices = torch.bernoulli(probability_matrix).bool()
+        
+        # 保存真实标签
+        labels[~masked_indices] = -100  # 忽略
+        
+        # 80%替换为[MASK]
+        indices_replaced = torch.bernoulli(
+            torch.full(input_ids.shape, 1 - self.random_replace_prob - self.keep_prob)
+        ).bool() & masked_indices
+        input_ids[indices_replaced] = self.mask_token_id
+        
+        # 10%替换为随机词
+        indices_random = torch.bernoulli(
+            torch.full(input_ids.shape, self.random_replace_prob)
+        ).bool() & masked_indices & ~indices_replaced
+        random_words = torch.randint(
+            self.vocab_size, input_ids.shape, dtype=torch.long
+        )
+        input_ids[indices_random] = random_words[indices_random]
+        
+        # 10%保持不变
+        
+        return input_ids, labels
+\`\`\`
+
+### 混合预训练目标
+
+现代大模型常使用多种预训练目标的组合：
+
+\`\`\`python
+class HybridPretrainingObjective(nn.Module):
+    """混合预训练目标"""
+    
+    def __init__(
+        self, 
+        vocab_size, 
+        mask_token_id,
+        clm_weight=0.5,
+        mlm_weight=0.5
+    ):
+        super().__init__()
+        self.clm_weight = clm_weight
+        self.mlm_weight = mlm_weight
+        
+        self.clm_loss = CausalLMObjective(vocab_size)
+        self.mlm_masker = MLMMasker(vocab_size, mask_token_id)
+    
+    def forward(self, model, input_ids):
+        # CLM损失
+        clm_logits = model(input_ids)
+        clm_loss = self.clm_loss(clm_logits, input_ids)
+        
+        # MLM损失
+        masked_input, mlm_labels = self.mlm_masker(input_ids)
+        mlm_logits = model(masked_input)
+        mlm_loss = F.cross_entropy(
+            mlm_logits.view(-1, mlm_logits.size(-1)),
+            mlm_labels.view(-1),
+            ignore_index=-100
+        )
+        
+        # 组合损失
+        total_loss = self.clm_weight * clm_loss + self.mlm_weight * mlm_loss
+        
+        return total_loss, {'clm_loss': clm_loss, 'mlm_loss': mlm_loss}
+\`\`\`
+
+---
+
+## 大规模分布式训练
+
+训练大模型需要分布式计算技术来处理海量参数和数据。
+
+![分布式训练策略](/images/distributed-training.png)
+
+### 数据并行（Data Parallelism）
+
+数据并行是最简单的分布式策略：
+
+\`\`\`python
+import torch.distributed as dist
+import torch.nn.parallel.DistributedDataParallel as DDP
+
+def setup_distributed(rank, world_size):
+    """初始化分布式环境"""
+    dist.init_process_group(
+        backend='nccl',
+        init_method='env://',
+        world_size=world_size,
+        rank=rank
+    )
+
+def train_distributed(rank, world_size):
+    """分布式训练"""
+    setup_distributed(rank, world_size)
+    
+    # 创建模型并移到对应GPU
+    model = LLaMAModel(config).to(rank)
+    
+    # 包装为DDP
+    model = DDP(model, device_ids=[rank])
+    
+    # 数据加载器
+    train_loader = get_dataloader(rank, world_size)
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    
+    for epoch in range(num_epochs):
+        for batch in train_loader:
+            batch = batch.to(rank)
+            
+            optimizer.zero_grad()
+            outputs = model(batch)
+            loss = compute_loss(outputs, batch)
+            loss.backward()
+            optimizer.step()
+    
+    dist.destroy_process_group()
+\`\`\`
+
+### 模型并行（Model Parallelism）
+
+当模型太大无法放入单个GPU时，需要模型并行：
+
+\`\`\`python
+class PipelineParallelLLaMA(nn.Module):
+    """流水线并行的LLaMA"""
+    
+    def __init__(self, config, num_stages=4):
+        super().__init__()
+        self.num_stages = num_stages
+        layers_per_stage = config.n_layers // num_stages
+        
+        # 将层分配到不同设备
+        self.stages = nn.ModuleList()
+        for i in range(num_stages):
+            stage_layers = nn.ModuleList([
+                LLaMABlock(config.d_model, config.n_heads, config.d_ff)
+                for _ in range(layers_per_stage)
+            ])
+            self.stages.append(stage_layers)
+        
+        self.stage_devices = [f'cuda:{i}' for i in range(num_stages)]
+    
+    def forward(self, x):
+        for i, stage in enumerate(self.stages):
+            x = x.to(self.stage_devices[i])
+            for layer in stage:
+                x = layer(x)
+        return x
+\`\`\`
+
+### 张量并行（Tensor Parallelism）
+
+张量并行将单个层分割到多个GPU：
+
+\`\`\`python
+class TensorParallelAttention(nn.Module):
+    """张量并行的多头注意力"""
+    
+    def __init__(self, d_model, n_heads, rank, world_size):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.rank = rank
+        self.world_size = world_size
+        
+        # 每个GPU处理部分注意力头
+        self.local_n_heads = n_heads // world_size
+        self.d_k = d_model // n_heads
+        
+        # 分片的Q, K, V投影
+        self.q_proj = nn.Linear(d_model, self.local_n_heads * self.d_k, bias=False)
+        self.k_proj = nn.Linear(d_model, self.local_n_heads * self.d_k, bias=False)
+        self.v_proj = nn.Linear(d_model, self.local_n_heads * self.d_k, bias=False)
+        
+        # 分片的输出投影
+        self.out_proj = nn.Linear(self.local_n_heads * self.d_k, d_model, bias=False)
+    
+    def forward(self, x):
+        # 本地计算
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        
+        # 重塑为多头形式
+        batch_size, seq_len, _ = q.shape
+        q = q.view(batch_size, seq_len, self.local_n_heads, self.d_k).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.local_n_heads, self.d_k).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.local_n_heads, self.d_k).transpose(1, 2)
+        
+        # 计算注意力
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+        attn_weights = F.softmax(scores, dim=-1)
+        output = torch.matmul(attn_weights, v)
+        
+        # 重塑
+        output = output.transpose(1, 2).contiguous().view(
+            batch_size, seq_len, -1
+        )
+        
+        # 输出投影
+        output = self.out_proj(output)
+        
+        # All-Reduce聚合结果
+        dist.all_reduce(output, op=dist.ReduceOp.SUM)
+        
+        return output
+\`\`\`
+
+### ZeRO优化器
+
+ZeRO（Zero Redundancy Optimizer）显著减少内存占用：
+
+\`\`\`python
+from deepspeed.runtime.zero.stage3 import estimate_zero3_model_states_mem_needs_all_live
+
+def configure_zero():
+    """ZeRO配置"""
+    return {
+        "zero_optimization": {
+            "stage": 3,  # ZeRO-3
+            "offload_optimizer": {
+                "device": "cpu",
+                "pin_memory": True
+            },
+            "offload_param": {
+                "device": "cpu",
+                "pin_memory": True
+            },
+            "overlap_comm": True,
+            "contiguous_gradients": True,
+            "reduce_bucket_size": 5e8,
+            "stage3_prefetch_bucket_size": 5e7,
+            "stage3_param_persistence_threshold": 1e5,
+        },
+        "gradient_accumulation_steps": 1,
+        "train_micro_batch_size_per_gpu": 1,
+    }
+
+# 计算内存需求
+def estimate_memory(model, num_gpus):
+    estimate_zero3_model_states_mem_needs_all_live(
+        model, 
+        num_gpus=num_gpus,
+        num_parameters=model.num_parameters()
+    )
+\`\`\`
+
+### DeepSpeed集成
+
+\`\`\`python
+import deepspeed
+
+def train_with_deepspeed():
+    """使用DeepSpeed训练"""
+    model = LLaMAModel(config)
+    
+    # DeepSpeed配置
+    ds_config = {
+        "train_batch_size": 128,
+        "train_micro_batch_size_per_gpu": 1,
+        "gradient_accumulation_steps": 1,
+        "optimizer": {
+            "type": "AdamW",
+            "params": {
+                "lr": 1e-4,
+                "betas": [0.9, 0.95],
+                "eps": 1e-8,
+                "weight_decay": 0.1
+            }
+        },
+        "scheduler": {
+            "type": "WarmupDecayLR",
+            "params": {
+                "warmup_min_lr": 0,
+                "warmup_max_lr": 1e-4,
+                "warmup_num_steps": 2000,
+                "total_num_steps": 100000
+            }
+        },
+        "fp16": {
+            "enabled": True,
+            "loss_scale": 0,
+            "initial_scale_power": 16,
+            "loss_scale_window": 1000,
+            "hysteresis": 2,
+            "min_loss_scale": 1
+        },
+        "zero_optimization": {
+            "stage": 2,
+            "offload_optimizer": {"device": "cpu"},
+            "contiguous_gradients": True,
+            "reduce_bucket_size": 5e8
+        }
+    }
+    
+    # 初始化DeepSpeed
+    model_engine, optimizer, _, _ = deepspeed.initialize(
+        model=model,
+        config=ds_config
+    )
+    
+    # 训练循环
+    for batch in train_loader:
+        outputs = model_engine(batch)
+        loss = compute_loss(outputs, batch)
+        model_engine.backward(loss)
+        model_engine.step()
+\`\`\`
+
+---
+
+## 数据处理流水线
+
+高质量的数据处理是预训练成功的关键。
+
+![预训练流程](/images/pretraining-pipeline.png)
+
+### 数据收集与清洗
+
+\`\`\`python
+import re
+from bs4 import BeautifulSoup
+from tqdm import tqdm
+
+class DataCleaner:
+    """数据清洗管道"""
+    
+    def __init__(self):
+        self.min_length = 100
+        self.max_length = 100000
+    
+    def clean_text(self, text):
+        """清洗文本"""
+        # 移除HTML标签
+        text = BeautifulSoup(text, 'html.parser').get_text()
+        
+        # 标准化空白
+        text = re.sub(r'\\s+', ' ', text)
+        
+        # 移除特殊字符（保留多语言支持）
+        text = re.sub(r'[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f]', '', text)
+        
+        # 移除过长的重复模式
+        text = self._remove_repeated_patterns(text)
+        
+        return text.strip()
+    
+    def _remove_repeated_patterns(self, text, max_repeat=10):
+        """移除重复模式"""
+        # 检测并移除连续重复的短语
+        pattern = re.compile(r'(.+?)\\1{' + str(max_repeat) + r',}')
+        while True:
+            new_text = pattern.sub(r'\\1', text)
+            if new_text == text:
+                break
+            text = new_text
+        return text
+    
+    def is_quality_text(self, text):
+        """判断文本质量"""
+        # 长度检查
+        if len(text) < self.min_length or len(text) > self.max_length:
+            return False
+        
+        # 字符多样性
+        unique_chars = len(set(text))
+        if unique_chars < 50:
+            return False
+        
+        # 语言检测
+        # ... 更多质量过滤
+        
+        return True
+
+
+def process_corpus(input_files, output_file):
+    """处理大规模语料库"""
+    cleaner = DataCleaner()
+    
+    with open(output_file, 'w', encoding='utf-8') as out_f:
+        for input_file in tqdm(input_files):
+            with open(input_file, 'r', encoding='utf-8') as in_f:
+                for line in in_f:
+                    text = cleaner.clean_text(line)
+                    if cleaner.is_quality_text(text):
+                        out_f.write(text + '\\n')
+\`\`\`
+
+### 分词器训练
+
+\`\`\`python
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
+from tokenizers.trainers import BpeTrainer
+from tokenizers.pre_tokenizers import ByteLevel
+from tokenizers.processors import ByteLevel as ByteLevelProcessor
+
+def train_tokenizer(corpus_files, vocab_size=32000, output_path="tokenizer.json"):
+    """训练BPE分词器"""
+    # 初始化分词器
+    tokenizer = Tokenizer(BPE(unk_token="<unk>"))
+    
+    # 字节级预处理
+    tokenizer.pre_tokenizer = ByteLevel(add_prefix_space=False)
+    
+    # 训练器配置
+    trainer = BpeTrainer(
+        vocab_size=vocab_size,
+        special_tokens=[
+            "<pad>",
+            "<s>",
+            "</s>",
+            "<unk>",
+            "<mask>",
+        ],
+        show_progress=True
+    )
+    
+    # 训练
+    tokenizer.train(files=corpus_files, trainer=trainer)
+    
+    # 后处理
+    tokenizer.post_processor = ByteLevelProcessor(trim_offsets=False)
+    
+    # 保存
+    tokenizer.save(output_path)
+    
+    return tokenizer
+
+
+class TokenizerWrapper:
+    """分词器包装器"""
+    
+    def __init__(self, tokenizer_path):
+        self.tokenizer = Tokenizer.from_file(tokenizer_path)
+        self.pad_token_id = self.tokenizer.token_to_id("<pad>")
+        self.bos_token_id = self.tokenizer.token_to_id("<s>")
+        self.eos_token_id = self.tokenizer.token_to_id("</s>")
+    
+    def encode(self, text, max_length=None):
+        """编码文本"""
+        encoding = self.tokenizer.encode(text)
+        
+        if max_length:
+            # 截断
+            encoding.ids = encoding.ids[:max_length]
+        
+        return encoding.ids
+    
+    def decode(self, ids):
+        """解码ID序列"""
+        return self.tokenizer.decode(ids)
+    
+    def batch_encode(self, texts, max_length=None, padding=True):
+        """批量编码"""
+        all_ids = []
+        all_attention_masks = []
+        
+        for text in texts:
+            ids = self.encode(text, max_length)
+            attention_mask = [1] * len(ids)
+            all_ids.append(ids)
+            all_attention_masks.append(attention_mask)
+        
+        if padding:
+            max_len = max(len(ids) for ids in all_ids)
+            for i in range(len(all_ids)):
+                padding_length = max_len - len(all_ids[i])
+                all_ids[i] = all_ids[i] + [self.pad_token_id] * padding_length
+                all_attention_masks[i] = all_attention_masks[i] + [0] * padding_length
+        
+        return {
+            'input_ids': torch.tensor(all_ids),
+            'attention_mask': torch.tensor(all_attention_masks)
+        }
+\`\`\`
+
+### 数据加载器
+
+\`\`\`python
+from torch.utils.data import Dataset, DataLoader
+
+class PretrainingDataset(Dataset):
+    """预训练数据集"""
+    
+    def __init__(
+        self, 
+        data_path, 
+        tokenizer, 
+        max_length=2048,
+        buffer_size=10000
+    ):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.buffer_size = buffer_size
+        
+        # 加载并缓存数据
+        self.data = self._load_and_cache_data(data_path)
+    
+    def _load_and_cache_data(self, data_path):
+        """加载并缓存数据"""
+        cached_data = []
+        
+        with open(data_path, 'r', encoding='utf-8') as f:
+            current_chunk = []
+            current_length = 0
+            
+            for line in f:
+                tokens = self.tokenizer.encode(line.strip())
+                current_chunk.extend(tokens)
+                current_length += len(tokens)
+                
+                # 当累积足够长度时，分割成训练样本
+                while current_length >= self.max_length + 1:
+                    sample = current_chunk[:self.max_length + 1]
+                    cached_data.append(sample)
+                    current_chunk = current_chunk[self.max_length:]
+                    current_length = len(current_chunk)
+        
+        return cached_data
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        ids = self.data[idx]
+        return torch.tensor(ids, dtype=torch.long)
+
+
+def create_dataloader(
+    data_path, 
+    tokenizer, 
+    batch_size=32,
+    max_length=2048,
+    num_workers=4,
+    shuffle=True
+):
+    """创建数据加载器"""
+    dataset = PretrainingDataset(
+        data_path, 
+        tokenizer, 
+        max_length
+    )
+    
+    # 自定义批次处理
+    def collate_fn(batch):
+        # 填充到批次内最大长度
+        max_len = max(len(item) for item in batch)
+        
+        input_ids = []
+        attention_mask = []
+        
+        for item in batch:
+            padding_length = max_len - len(item)
+            input_ids.append(
+                torch.cat([item, torch.zeros(padding_length, dtype=torch.long)])
+            )
+            attention_mask.append(
+                torch.cat([torch.ones(len(item)), torch.zeros(padding_length)])
+            )
+        
+        return {
+            'input_ids': torch.stack(input_ids),
+            'attention_mask': torch.stack(attention_mask)
+        }
+    
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        pin_memory=True
+    )
+\`\`\`
+
+---
+
+## 实战：从零预训练小型LLaMA
+
+现在让我们实现一个完整的小型LLaMA预训练流程。
+
+### 模型定义
+
+\`\`\`python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass
+class LLaMAConfig:
+    """LLaMA模型配置"""
+    vocab_size: int = 32000
+    d_model: int = 512
+    n_heads: int = 8
+    n_layers: int = 12
+    d_ff: int = 1376  # 约 8/3 * d_model
+    max_seq_len: int = 1024
+    dropout: float = 0.1
+    rope_theta: float = 10000.0
+
+
+class RMSNorm(nn.Module):
+    """RMS LayerNorm"""
+    
+    def __init__(self, d_model: int, eps: float = 1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(d_model))
+        self.eps = eps
+    
+    def forward(self, x):
+        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
+        return self.weight * (x / rms)
+
+
+class RotaryEmbedding(nn.Module):
+    """旋转位置编码"""
+    
+    def __init__(self, d_k: int, max_seq_len: int = 2048, theta: float = 10000.0):
+        super().__init__()
+        self.d_k = d_k
+        self.max_seq_len = max_seq_len
+        
+        # 计算频率
+        inv_freq = 1.0 / (theta ** (torch.arange(0, d_k, 2).float() / d_k))
+        self.register_buffer('inv_freq', inv_freq)
+    
+    def forward(self, x, seq_len):
+        # 生成位置索引
+        t = torch.arange(seq_len, device=x.device, dtype=self.inv_freq.dtype)
+        
+        # 计算频率
+        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        
+        # 应用旋转
+        cos = emb.cos().unsqueeze(0).unsqueeze(0)
+        sin = emb.sin().unsqueeze(0).unsqueeze(0)
+        
+        return self._apply_rotary(x, cos, sin)
+    
+    def _apply_rotary(self, x, cos, sin):
+        # x: [batch, n_heads, seq_len, d_k]
+        x1, x2 = x[..., :x.shape[-1]//2], x[..., x.shape[-1]//2:]
+        rotated = torch.cat((-x2, x1), dim=-1)
+        return x * cos + rotated * sin
+
+
+class LLaMAAttention(nn.Module):
+    """LLaMA多头注意力"""
+    
+    def __init__(self, config: LLaMAConfig):
+        super().__init__()
+        self.d_model = config.d_model
+        self.n_heads = config.n_heads
+        self.d_k = config.d_model // config.n_heads
+        
+        # 投影层（无偏置）
+        self.q_proj = nn.Linear(config.d_model, config.d_model, bias=False)
+        self.k_proj = nn.Linear(config.d_model, config.d_model, bias=False)
+        self.v_proj = nn.Linear(config.d_model, config.d_model, bias=False)
+        self.o_proj = nn.Linear(config.d_model, config.d_model, bias=False)
+        
+        # RoPE
+        self.rope = RotaryEmbedding(
+            self.d_k, 
+            config.max_seq_len,
+            config.rope_theta
+        )
+        
+        self.dropout = nn.Dropout(config.dropout)
+    
+    def forward(self, x, mask=None):
+        batch_size, seq_len, _ = x.shape
+        
+        # 投影
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        
+        # 重塑为多头
+        q = q.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
+        
+        # 应用RoPE
+        q = self.rope(q, seq_len)
+        k = self.rope(k, seq_len)
+        
+        # 计算注意力
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
+        
+        if mask is not None:
+            scores = scores.masked_fill(mask, float('-inf'))
+        
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        
+        # 计算输出
+        output = torch.matmul(attn_weights, v)
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
+        
+        return self.o_proj(output)
+
+
+class LLaMAFFN(nn.Module):
+    """LLaMA前馈网络（SwiGLU）"""
+    
+    def __init__(self, config: LLaMAConfig):
+        super().__init__()
+        self.gate_proj = nn.Linear(config.d_model, config.d_ff, bias=False)
+        self.up_proj = nn.Linear(config.d_model, config.d_ff, bias=False)
+        self.down_proj = nn.Linear(config.d_ff, config.d_model, bias=False)
+        self.dropout = nn.Dropout(config.dropout)
+    
+    def forward(self, x):
+        gate = F.silu(self.gate_proj(x))
+        up = self.up_proj(x)
+        return self.dropout(self.down_proj(gate * up))
+
+
+class LLaMATransformerBlock(nn.Module):
+    """LLaMA Transformer块"""
+    
+    def __init__(self, config: LLaMAConfig):
+        super().__init__()
+        self.attention = LLaMAAttention(config)
+        self.ffn = LLaMAFFN(config)
+        self.ln1 = RMSNorm(config.d_model)
+        self.ln2 = RMSNorm(config.d_model)
+    
+    def forward(self, x, mask=None):
+        # Pre-Norm结构
+        x = x + self.attention(self.ln1(x), mask)
+        x = x + self.ffn(self.ln2(x))
+        return x
+
+
+class LLaMAForCausalLM(nn.Module):
+    """LLaMA因果语言模型"""
+    
+    def __init__(self, config: LLaMAConfig):
+        super().__init__()
+        self.config = config
+        
+        # 嵌入层
+        self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
+        
+        # Transformer层
+        self.layers = nn.ModuleList([
+            LLaMATransformerBlock(config) 
+            for _ in range(config.n_layers)
+        ])
+        
+        # 最终归一化
+        self.final_norm = RMSNorm(config.d_model)
+        
+        # 语言模型头
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        
+        # 权重共享
+        self.lm_head.weight = self.token_embedding.weight
+        
+        # 初始化
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    
+    def forward(self, input_ids, attention_mask=None):
+        batch_size, seq_len = input_ids.shape
+        
+        # 嵌入
+        x = self.token_embedding(input_ids)
+        
+        # 因果掩码
+        causal_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=input_ids.device), 
+            diagonal=1
+        ).bool()
+        causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
+        
+        # Transformer层
+        for layer in self.layers:
+            x = layer(x, causal_mask)
+        
+        # 最终归一化
+        x = self.final_norm(x)
+        
+        # 语言模型头
+        logits = self.lm_head(x)
+        
+        return logits
+    
+    @torch.no_grad()
+    def generate(
+        self, 
+        input_ids, 
+        max_new_tokens=100,
+        temperature=1.0,
+        top_k=None,
+        top_p=None
+    ):
+        """生成文本"""
+        self.eval()
+        
+        for _ in range(max_new_tokens):
+            # 截断到最大长度
+            idx_cond = input_ids[:, -self.config.max_seq_len:]
+            
+            # 前向传播
+            logits = self(idx_cond)
+            
+            # 只取最后一个位置的logits
+            logits = logits[:, -1, :] / temperature
+            
+            # Top-k采样
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('Inf')
+            
+            # Top-p采样
+            if top_p is not None:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                
+                indices_to_remove = sorted_indices_to_remove.scatter(
+                    1, sorted_indices, sorted_indices_to_remove
+                )
+                logits[indices_to_remove] = -float('Inf')
+            
+            # 采样
+            probs = F.softmax(logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            
+            # 追加
+            input_ids = torch.cat([input_ids, next_token], dim=1)
+        
+        return input_ids
+    
+    def count_parameters(self):
+        """计算参数量"""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+# 创建模型
+config = LLaMAConfig(
+    vocab_size=32000,
+    d_model=512,
+    n_heads=8,
+    n_layers=12,
+    d_ff=1376,
+    max_seq_len=1024
+)
+
+model = LLaMAForCausalLM(config)
+print(f"模型参数量: {model.count_parameters() / 1e6:.2f}M")
+\`\`\`
+
+### 训练循环
+
+\`\`\`python
+import wandb
+from torch.optim.lr_scheduler import OneCycleLR
+from tqdm import tqdm
+
+class Trainer:
+    """预训练器"""
+    
+    def __init__(
+        self,
+        model,
+        train_loader,
+        val_loader,
+        tokenizer,
+        config,
+        output_dir="checkpoints"
+    ):
+        self.model = model
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.tokenizer = tokenizer
+        self.config = config
+        self.output_dir = output_dir
+        
+        # 设备
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self.model.to(self.device)
+        
+        # 优化器
+        self.optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.learning_rate,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            weight_decay=config.weight_decay
+        )
+        
+        # 学习率调度器
+        self.scheduler = OneCycleLR(
+            self.optimizer,
+            max_lr=config.learning_rate,
+            epochs=config.num_epochs,
+            steps_per_epoch=len(train_loader),
+            pct_start=config.warmup_ratio
+        )
+        
+        # 混合精度训练
+        self.scaler = torch.cuda.amp.GradScaler(enabled=config.use_amp)
+        
+        # 损失函数
+        self.loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
+        
+        # 初始化wandb
+        if config.use_wandb:
+            wandb.init(project="llama-pretraining", config=vars(config))
+    
+    def train(self):
+        """训练循环"""
+        best_val_loss = float('inf')
+        global_step = 0
+        
+        for epoch in range(self.config.num_epochs):
+            self.model.train()
+            epoch_loss = 0
+            
+            progress_bar = tqdm(
+                self.train_loader, 
+                desc=f"Epoch {epoch + 1}/{self.config.num_epochs}"
+            )
+            
+            for batch in progress_bar:
+                input_ids = batch['input_ids'].to(self.device)
+                
+                with torch.cuda.amp.autocast(enabled=self.config.use_amp):
+                    # 前向传播
+                    logits = self.model(input_ids)
+                    
+                    # 计算损失（下一个词预测）
+                    shift_logits = logits[:, :-1, :].contiguous()
+                    shift_labels = input_ids[:, 1:].contiguous()
+                    
+                    loss = self.loss_fn(
+                        shift_logits.view(-1, shift_logits.size(-1)),
+                        shift_labels.view(-1)
+                    )
+                
+                # 反向传播
+                self.optimizer.zero_grad()
+                self.scaler.scale(loss).backward()
+                
+                # 梯度裁剪
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), 
+                    self.config.max_grad_norm
+                )
+                
+                # 更新权重
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                
+                # 更新学习率
+                self.scheduler.step()
+                
+                # 记录
+                epoch_loss += loss.item()
+                global_step += 1
+                
+                if global_step % self.config.log_interval == 0:
+                    lr = self.scheduler.get_last_lr()[0]
+                    progress_bar.set_postfix({
+                        'loss': f'{loss.item():.4f}',
+                        'lr': f'{lr:.2e}'
+                    })
+                    
+                    if self.config.use_wandb:
+                        wandb.log({
+                            'train/loss': loss.item(),
+                            'train/lr': lr,
+                            'train/step': global_step
+                        })
+            
+            # 验证
+            val_loss = self.validate()
+            avg_train_loss = epoch_loss / len(self.train_loader)
+            
+            print(f"Epoch {epoch + 1}: Train Loss = {avg_train_loss:.4f}, Val Loss = {val_loss:.4f}")
+            
+            # 记录到wandb
+            if self.config.use_wandb:
+                wandb.log({
+                    'epoch': epoch,
+                    'train/epoch_loss': avg_train_loss,
+                    'val/loss': val_loss
+                })
+            
+            # 保存检查点
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                self.save_checkpoint(epoch, val_loss, is_best=True)
+            else:
+                self.save_checkpoint(epoch, val_loss, is_best=False)
+    
+    def validate(self):
+        """验证"""
+        self.model.eval()
+        total_loss = 0
+        
+        with torch.no_grad():
+            for batch in tqdm(self.val_loader, desc="Validating"):
+                input_ids = batch['input_ids'].to(self.device)
+                
+                with torch.cuda.amp.autocast(enabled=self.config.use_amp):
+                    logits = self.model(input_ids)
+                    
+                    shift_logits = logits[:, :-1, :].contiguous()
+                    shift_labels = input_ids[:, 1:].contiguous()
+                    
+                    loss = self.loss_fn(
+                        shift_logits.view(-1, shift_logits.size(-1)),
+                        shift_labels.view(-1)
+                    )
+                
+                total_loss += loss.item()
+        
+        return total_loss / len(self.val_loader)
+    
+    def save_checkpoint(self, epoch, loss, is_best=False):
+        """保存检查点"""
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'loss': loss,
+            'config': vars(self.config)
+        }
+        
+        path = f"{self.output_dir}/checkpoint_epoch_{epoch}.pt"
+        torch.save(checkpoint, path)
+        
+        if is_best:
+            best_path = f"{self.output_dir}/best_model.pt"
+            torch.save(checkpoint, best_path)
+        
+        print(f"Checkpoint saved: {path}")
+
+
+@dataclass
+class TrainingConfig:
+    """训练配置"""
+    learning_rate: float = 3e-4
+    weight_decay: float = 0.1
+    num_epochs: int = 10
+    warmup_ratio: float = 0.05
+    max_grad_norm: float = 1.0
+    log_interval: int = 100
+    use_amp: bool = True
+    use_wandb: bool = True
+
+
+# 启动训练
+if __name__ == "__main__":
+    # 配置
+    model_config = LLaMAConfig()
+    training_config = TrainingConfig()
+    
+    # 创建模型
+    model = LLaMAForCausalLM(model_config)
+    
+    # 创建数据加载器
+    train_loader = create_dataloader("train.txt", tokenizer, batch_size=32)
+    val_loader = create_dataloader("val.txt", tokenizer, batch_size=32)
+    
+    # 创建训练器
+    trainer = Trainer(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        tokenizer=tokenizer,
+        config=training_config
+    )
+    
+    # 开始训练
+    trainer.train()
+\`\`\`
+
+---
+
+## 训练监控与调优
+
+### 监控指标
+
+\`\`\`python
+import matplotlib.pyplot as plt
+from collections import defaultdict
+
+class TrainingMonitor:
+    """训练监控器"""
+    
+    def __init__(self):
+        self.metrics = defaultdict(list)
+    
+    def log(self, metric_name, value):
+        """记录指标"""
+        self.metrics[metric_name].append(value)
+    
+    def plot_metrics(self, save_path=None):
+        """绘制指标曲线"""
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        
+        # 损失曲线
+        if 'train_loss' in self.metrics:
+            axes[0, 0].plot(self.metrics['train_loss'], label='Train')
+            if 'val_loss' in self.metrics:
+                axes[0, 0].plot(self.metrics['val_loss'], label='Val')
+            axes[0, 0].set_xlabel('Epoch')
+            axes[0, 0].set_ylabel('Loss')
+            axes[0, 0].set_title('Training/Validation Loss')
+            axes[0, 0].legend()
+        
+        # 学习率曲线
+        if 'learning_rate' in self.metrics:
+            axes[0, 1].plot(self.metrics['learning_rate'])
+            axes[0, 1].set_xlabel('Step')
+            axes[0, 1].set_ylabel('Learning Rate')
+            axes[0, 1].set_title('Learning Rate Schedule')
+        
+        # 梯度范数
+        if 'grad_norm' in self.metrics:
+            axes[1, 0].plot(self.metrics['grad_norm'])
+            axes[1, 0].set_xlabel('Step')
+            axes[1, 0].set_ylabel('Gradient Norm')
+            axes[1, 0].set_title('Gradient Norm')
+        
+        # Perplexity
+        if 'train_ppl' in self.metrics:
+            axes[1, 1].plot(self.metrics['train_ppl'], label='Train')
+            if 'val_ppl' in self.metrics:
+                axes[1, 1].plot(self.metrics['val_ppl'], label='Val')
+            axes[1, 1].set_xlabel('Epoch')
+            axes[1, 1].set_ylabel('Perplexity')
+            axes[1, 1].set_title('Perplexity')
+            axes[1, 1].legend()
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path)
+        plt.show()
+
+
+def compute_perplexity(loss):
+    """计算困惑度"""
+    return math.exp(loss)
+
+
+def compute_grad_norm(model):
+    """计算梯度范数"""
+    total_norm = 0
+    for p in model.parameters():
+        if p.grad is not None:
+            total_norm += p.grad.data.norm(2).item() ** 2
+    return math.sqrt(total_norm)
+\`\`\`
+
+### 超参数调优
+
+\`\`\`python
+import optuna
+
+def objective(trial):
+    """Optuna优化目标"""
+    # 超参数搜索空间
+    learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
+    weight_decay = trial.suggest_float('weight_decay', 0.01, 0.3)
+    warmup_ratio = trial.suggest_float('warmup_ratio', 0.01, 0.1)
+    batch_size = trial.suggest_categorical('batch_size', [16, 32, 64])
+    
+    # 创建配置
+    config = TrainingConfig(
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        warmup_ratio=warmup_ratio
+    )
+    
+    # 训练模型
+    model = LLaMAForCausalLM(LLaMAConfig())
+    trainer = Trainer(model, train_loader, val_loader, tokenizer, config)
+    
+    # 简化训练
+    val_loss = trainer.quick_validate()
+    
+    return val_loss
+
+# 运行优化
+study = optuna.create_study(direction='minimize')
+study.optimize(objective, n_trials=50)
+
+print(f"Best trial: {study.best_trial.params}")
+\`\`\`
+
+---
+
+## 总结与展望
+
+### 核心要点回顾
+
+本文全面介绍了大模型预训练的关键技术：
+
+1. **架构设计**：Transformer是基础，LLaMA进行了多项优化（RoPE、SwiGLU、RMSNorm）
+2. **自注意力机制**：多头注意力、因果掩码、位置编码是核心组件
+3. **分布式训练**：数据并行、模型并行、张量并行、ZeRO是处理大规模训练的关键
+4. **数据处理**：高质量的数据清洗、分词、加载器设计至关重要
+5. **训练技巧**：学习率调度、梯度裁剪、混合精度训练是稳定训练的法宝
+
+### 未来发展趋势
+
+大模型预训练领域正在快速发展：
+
+1. **更长的上下文**：从2048到100K+，长上下文成为标配
+2. **多模态融合**：文本、图像、音频、视频的统一建模
+3. **高效架构**：Mamba、RWKV等线性注意力架构崭露头角
+4. **推理优化**：量化、蒸馏、剪枝技术日趋成熟
+5. **AI Agent**：大模型作为Agent的核心大脑，与工具深度集成
+
+### 进一步学习资源
+
+- **论文**：Attention Is All You Need, GPT-3, LLaMA, FlashAttention
+- **开源项目**：Hugging Face Transformers, DeepSpeed, Megatron-LM
+- **课程**：Stanford CS224N, DeepLearning.AI LLM系列
+
+希望本指南能帮助你建立对大模型预训练的完整理解，并在实践中取得成功！
+`,
+  },
 ]
 
 export function getPost(id: string): BlogPost | undefined {
